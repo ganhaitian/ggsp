@@ -17,6 +17,43 @@ import java.util.concurrent.Executor;
  */
 public class GgspPooledConnection implements PooledConnection,Connection {
 
+    protected volatile GgspConnectionHolder holder;
+
+    private StackTraceElement[]             connectStackTrace;
+
+    private long                            connectedTimeNano;
+    private boolean                         traceEnable             = false;
+
+    public boolean isTraceEnable() {
+        return traceEnable;
+    }
+
+    public void setTraceEnable(boolean traceEnable) {
+        this.traceEnable = traceEnable;
+    }
+
+    public long getConnectedTimeNano() {
+        return connectedTimeNano;
+    }
+
+    public void setConnectedTimeNano() {
+        if(connectedTimeNano <= 0){
+            this.connectedTimeNano = System.nanoTime();
+        }
+    }
+
+    public GgspConnectionHolder getConnectionHolder() {
+        return holder;
+    }
+
+    public StackTraceElement[] getConnectStackTrace() {
+        return connectStackTrace;
+    }
+
+    public void setConnectStackTrace(StackTraceElement[] connectStackTrace) {
+        this.connectStackTrace = connectStackTrace;
+    }
+
     @Override
     public Statement createStatement() throws SQLException {
         return null;  //To change body of implemented methods use File | Settings | File Templates.

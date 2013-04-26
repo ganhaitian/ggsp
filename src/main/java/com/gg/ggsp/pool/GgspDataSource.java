@@ -9,8 +9,11 @@ import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
+import java.util.Date;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.ReentrantLock;
 
@@ -25,10 +28,22 @@ public class GgspDataSource extends GgspAbstractDataSource{
 
     private final static Log                   LOG                     = LogFactory.getLog(GgspDataSource.class);
 
+    private long                               connectCount            = 0L;
+
     private int                                activeCount             = 0;
+    private int                                poolingCount            = 0;
     private int                                discardCount            = 0;
+    private int                                notEmptyWaitCount       = 0;
+    private int                                notEmptyWaitThreadCount = 0;
+    private int                                notEmptyWaitThreadPeak  = 0;
+    private int                                notEmptySignalCount     = 0;
 
+    private final AtomicLong                   connectErrorCount       = new AtomicLong();
 
+    private volatile boolean                   enable                  = true;
+
+    private volatile boolean                   closed                  = false;
+    private long                               closeTimeMills          = -1L;
 
     public GgspDataSource(){
         super(false);
@@ -76,12 +91,11 @@ public class GgspDataSource extends GgspAbstractDataSource{
                              continue;
                          }
                      }
-
                  }
              }
 
              if(isRemoveAbandoned()){
-                  StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+                 StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
                  poolableConnection.setConnectStackTrace(stackTrace);
                  poolableConnection.setConnectedTimeNano();
                  poolableConnection.setTraceEnable(true);
@@ -172,7 +186,98 @@ public class GgspDataSource extends GgspAbstractDataSource{
 
     }
 
-    private GgspPooledConnection getConnectionInternal(long maxWait) {
+    private GgspPooledConnection getConnectionInternal(long maxWait) throws SQLException{
+        if(closed){
+            connectErrorCount.incrementAndGet();
+            throw new DataSourceClosedException("DataSource already closed at "+new Date(closeTimeMills));
+        }
+
+        if(!enable){
+            connectErrorCount.incrementAndGet();
+            throw new DataSourceDisableException();
+        }
+
+        final long nanos = TimeUnit.MICROSECONDS.toNanos(maxWait);
+        final int maxWaitThreadCount = getMaxWaitThreadCount();
+
+        GgspConnectionHolder holder;
+
+        try{
+            lock.lockInterruptibly();
+        }catch(InterruptedException e){
+            connectErrorCount.incrementAndGet();
+            throw new SQLException("interrupt",e);
+        }
+
+        try{
+            if(maxWaitThreadCount > 0){
+                if(notEmptyWaitThreadCount >= maxWaitThreadCount){
+                    connectErrorCount.incrementAndGet();
+                    throw new SQLException("maxWaitThreadCount " + maxWaitThreadCount + ", current wait Thread count"
+                                           + lock.getQueueLength());
+                }
+            }
+
+            connectCount ++;
+
+            if(maxWait > 0){
+                holder = pollLast(nanos);
+            }else{
+                holder = takeLast();
+            }
+
+        } catch (InterruptedException e) {
+
+        } finally{
+
+        }
+
+
+
+        activeCount++;
+
+        return null;
+    }
+
+    GgspConnectionHolder pollLast(long nano) throws InterruptedException, SQLException {
+        long estimate = nano;
+
+        for(int i = 0;; ++i){
+            if(poolingCount == 0){
+               empty.signal();
+
+               if(estimate <=0 ){
+                    if(this.createError == null ){
+                        throw new GetConnectionTimeoutException();
+                    }else{
+                        throw new GetConnectionTimeoutException(createError);
+                    }
+               }
+
+               notEmptyWaitThreadCount ++;
+               if(notEmptyWaitThreadCount > notEmptyWaitThreadPeak ){
+                   notEmptyWaitThreadPeak = notEmptyWaitThreadCount;
+               }
+
+                try{
+                    long startEstimate = estimate;
+                    estimate = notEmpty.awaitNanos(estimate);
+
+                    notEmptyWaitCount ++;
+                    notEmptyWaitNanos += (startEstimate - estimate );
+
+
+
+                }catch(InterruptedException is){
+                    notEmpty.signal();
+                    notEmptySignalCount ++;
+                    throw is;
+                }finally {
+                    notEmptyWaitThreadCount --;
+                }
+            }
+        }
+
         return null;
     }
 

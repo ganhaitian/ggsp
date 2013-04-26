@@ -26,10 +26,14 @@ public abstract class GgspAbstractDataSource {
 
     protected volatile boolean                              defaultAutoCommit                         = true;
 
+    protected volatile int                                  maxWaitThreadCount                        = -1;
+
     protected volatile long                                 timeBetweenEvictionRunsMillis             = DEFAULT_TIME_BETWEEN_EVICTION_RUNS_MILLIS;
 
     protected final Map<GgspPooledConnection, Object>       activeConnection                          = new IdentityHashMap<GgspPooledConnection, Object>();
     protected final static Object                           PRESENT                                   = new Object();
+
+    protected volatile Throwable                            createError;
 
     protected volatile boolean                              removeAbandoned;
 
@@ -112,6 +116,14 @@ public abstract class GgspAbstractDataSource {
 
     public void setRemoveAbandoned(boolean removeAbandoned) {
         this.removeAbandoned = removeAbandoned;
+    }
+
+    public int getMaxWaitThreadCount() {
+        return maxWaitThreadCount;
+    }
+
+    public void setMaxWaitThreadCount(int maxWaitThreadCount) {
+        this.maxWaitThreadCount = maxWaitThreadCount;
     }
 
     public abstract void discardConnection(Connection realConnection);
