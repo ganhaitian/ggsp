@@ -1,5 +1,6 @@
 package com.gg.ggsp.util;
 
+import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
 
@@ -26,6 +27,16 @@ public final class JdbcUtils implements JdbcConstants{
         if(x != null){
             try{
                 x.close();
+            }catch(Exception e){
+
+            }
+        }
+    }
+
+    public final static void close(Connection conn){
+        if(conn != null){
+            try{
+                conn.close();
             }catch(Exception e){
 
             }

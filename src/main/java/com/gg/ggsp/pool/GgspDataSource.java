@@ -2,6 +2,7 @@ package com.gg.ggsp.pool;
 
 import com.gg.ggsp.filter.stat.Filter;
 import com.gg.ggsp.stat.JdbcSqlStat;
+import com.gg.ggsp.support.logging.LogFactory;
 import com.gg.ggsp.util.JdbcUtils;
 
 import java.sql.Connection;
@@ -10,6 +11,8 @@ import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Created with IntelliJ IDEA.
@@ -20,13 +23,16 @@ import java.util.concurrent.CopyOnWriteArrayList;
  */
 public class GgspDataSource extends GgspAbstractDataSource{
 
-    private final static Log                                LOG                                    = LogFactory.getLog(GgspDataSource.class);
+    private final static Log                   LOG                     = LogFactory.getLog(GgspDataSource.class);
 
-    public final static int                                 DEFAULT_MAX_WAIT                        =-1;
+    private int                                activeCount             = 0;
+    private int                                discardCount            = 0;
 
-    protected volatile long                                 maxWait                                 =DEFAULT_MAX_WAIT;
 
-    protected List<Filter>                                  filters                                 =new CopyOnWriteArrayList<Filter>();
+
+    public GgspDataSource(){
+        super(false);
+    }
 
     public GgspPooledConnection getConnection() throws SQLException {
         return getConnection(maxWait);
@@ -46,9 +52,68 @@ public class GgspDataSource extends GgspAbstractDataSource{
 
              if(isTestOnBorrow()){
                 boolean validate=testConnectionInternal(poolableConnection.getConnection());
+                if(!validate){
+                    Connection realConnection=poolableConnection.getConnection();
+                    //丢弃是因为检测到底层物理链接坏掉了吗？
+                    discardConnection(realConnection);
+                    continue;
+                }
+             }else{
+                 Connection realConnection = poolableConnection.getConnection();
+                 if(realConnection.isClosed()){
+                     //这里的空丢弃是为了维护activeCount和discardCount这两个参数。
+                     discardConnection(null);
+                     continue;
+                 }
 
+                 if(isTestWhileIdle()){
+                     long idleMills=System.currentTimeMillis()
+                                    -poolableConnection.getConnectionHolder().getLastActiveTimeMillis();
+                     if(idleMills >= this.getTimeBetweenEvictionRunsMillis()) {
+                         boolean validate = testConnectionInternal(poolableConnection.getConnection());
+                         if(!validate){
+                            discardConnection(realConnection);
+                             continue;
+                         }
+                     }
+
+                 }
              }
+
+             if(isRemoveAbandoned()){
+                  StackTraceElement[] stackTrace = Thread.currentThread().getStackTrace();
+                 poolableConnection.setConnectStackTrace(stackTrace);
+                 poolableConnection.setConnectedTimeNano();
+                 poolableConnection.setTraceEnable(true);
+
+                 synchronized (activeConnection){
+                      activeConnection.put(poolableConnection, PRESENT);
+                 }
+             }
+
+             if(!this.isDefaultAutoCommit()){
+                 poolableConnection.setAutoCommit(false);
+             }
+
+             return poolableConnection;
          }
+    }
+
+
+    public void discardConnection(Connection pooledConnection){
+        JdbcUtils.close(pooledConnection);
+
+        lock.lock();
+        try{
+            activeCount--;
+            discardCount++;
+
+            if(activeCount <= 0){
+                empty.signal();
+            }
+        }finally {
+            lock.unlock();
+        }
     }
 
     protected boolean testConnectionInternal(Connection conn){
@@ -110,7 +175,5 @@ public class GgspDataSource extends GgspAbstractDataSource{
     private GgspPooledConnection getConnectionInternal(long maxWait) {
         return null;
     }
-
-
 
 }
